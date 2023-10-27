@@ -165,7 +165,7 @@ email
   encountered instead of potentially inaccurate values. Add optional *strict*
   parameter to these two functions: use ``strict=False`` to get the old
   behavior, accept malformed inputs.
-  (Contributed by Thomas Dwyer for :gh:`102988` to ameliorate CVE-2023-27043
+  (Contributed by Thomas Dwyer for :gh:`102988` to improve the CVE-2023-27043
   fix.)
 
 io
