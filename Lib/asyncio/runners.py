@@ -12,6 +12,7 @@ from . import exceptions
 from . import tasks
 from . import constants
 
+
 class _State(enum.Enum):
     CREATED = "created"
     INITIALIZED = "initialized"
@@ -69,9 +70,11 @@ class Runner:
         try:
             loop = self._loop
             _cancel_all_tasks(loop)
-            loop.run_until_complete(loop.shutdown_asyncgens())
-            loop.run_until_complete(
-                loop.shutdown_default_executor(constants.THREAD_JOIN_TIMEOUT))
+            _run_until_complete(loop, loop.shutdown_asyncgens())
+            _run_until_complete(
+                loop,
+                loop.shutdown_default_executor(constants.THREAD_JOIN_TIMEOUT),
+            )
         finally:
             if self._set_event_loop:
                 events.set_event_loop(None)
@@ -124,7 +127,7 @@ class Runner:
 
         self._interrupt_count = 0
         try:
-            return self._loop.run_until_complete(task)
+            return _run_until_complete(self._loop, task)
         except exceptions.CancelledError:
             if self._interrupt_count > 0:
                 uncancel = getattr(task, "uncancel", None)
@@ -211,7 +214,7 @@ def _cancel_all_tasks(loop):
     for task in to_cancel:
         task.cancel()
 
-    loop.run_until_complete(tasks.gather(*to_cancel, return_exceptions=True))
+    _run_until_complete(loop, tasks.gather(*to_cancel, return_exceptions=True))
 
     for task in to_cancel:
         if task.cancelled():
@@ -222,3 +225,35 @@ def _cancel_all_tasks(loop):
                 'exception': task.exception(),
                 'task': task,
             })
+
+
+# Internal wrapper on loop.run_until_complete to allow registering root futures
+# awaited on by an event loop managed by a runner context manager.
+# This allows out-of-process profilers and debuggers to reconstruct the asyncio
+# await stack.
+
+
+_root_fut_per_loop = {}
+
+
+def _runner_run(loop, fut):
+    _root_fut_per_loop[loop] = fut
+
+
+_py_runner_run = _runner_run
+
+
+try:
+    from _asyncio import _runner_run
+except ImportError:
+    pass
+else:
+    _c_runner_run = _runner_run
+
+
+def _run_until_complete(loop, fut):
+    _runner_run(loop, fut)
+    try:
+        return loop.run_until_complete(fut)
+    finally:
+        _runner_run(loop, None)

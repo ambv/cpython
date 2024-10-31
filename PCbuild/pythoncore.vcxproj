@@ -208,6 +208,7 @@
     <ClInclude Include="..\Include\internal\pycore_asdl.h" />
     <ClInclude Include="..\Include\internal\pycore_ast.h" />
     <ClInclude Include="..\Include\internal\pycore_ast_state.h" />
+    <ClInclude Include="..\Include\internal\pycore_asyncio.h" />
     <ClInclude Include="..\Include\internal\pycore_atexit.h" />
     <ClInclude Include="..\Include\internal\pycore_audit.h" />
     <ClInclude Include="..\Include\internal\pycore_backoff.h" />

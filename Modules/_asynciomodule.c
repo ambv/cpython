@@ -3,6 +3,7 @@
 #endif
 
 #include "Python.h"
+#include "pycore_asyncio.h"       // root_fut_per_loop
 #include "pycore_critical_section.h"  // Py_BEGIN_CRITICAL_SECTION_MUT()
 #include "pycore_dict.h"          // _PyDict_GetItem_KnownHash()
 #include "pycore_freelist.h"      // _Py_FREELIST_POP()
@@ -75,7 +76,6 @@ typedef struct {
     PyObject *sw_arg;
 } TaskStepMethWrapper;
 
-
 #define Future_CheckExact(state, obj) Py_IS_TYPE(obj, state->FutureType)
 #define Task_CheckExact(state, obj) Py_IS_TYPE(obj, state->TaskType)
 
@@ -113,6 +113,11 @@ typedef struct _Py_AsyncioModuleDebugOffsets {
     uint64_t task_awaited_by_is_set;
     uint64_t task_coro;
   } asyncio_task_object;
+  struct _asyncio_thread_state {
+    uint64_t size;
+    uint64_t asyncio_running_loop;
+    uint64_t asyncio_run_roots;
+  } asyncio_thread_state;
 } Py_AsyncioModuleDebugOffsets;
 
 GENERATE_DEBUG_SECTION(AsyncioDebug, Py_AsyncioModuleDebugOffsets AsyncioDebug)
@@ -123,6 +128,11 @@ GENERATE_DEBUG_SECTION(AsyncioDebug, Py_AsyncioModuleDebugOffsets AsyncioDebug)
            .task_is_task = offsetof(TaskObj, task_is_task),
            .task_awaited_by_is_set = offsetof(TaskObj, task_awaited_by_is_set),
            .task_coro = offsetof(TaskObj, task_coro),
+       },
+       .asyncio_thread_state = {
+           .size = sizeof(_PyThreadStateImpl),
+           .asyncio_running_loop = offsetof(_PyThreadStateImpl, asyncio_running_loop),
+           .asyncio_run_roots = offsetof(_PyThreadStateImpl, asyncio_run_roots),
        }};
 
 /* State of the _asyncio module */
@@ -219,7 +229,6 @@ typedef struct {
         TaskObj tail;
         TaskObj *head;
     } asyncio_tasks;
-
 } asyncio_state;
 
 static inline asyncio_state *
@@ -268,9 +277,6 @@ task_step_handle_result_impl(asyncio_state *state, TaskObj *task, PyObject *resu
 static void
 clear_task_coro(TaskObj *task)
 {
-    if (task->task_coro != NULL && PyCoro_CheckExact(task->task_coro)) {
-        _PyCoro_SetTask(task->task_coro, NULL);
-    }
     Py_CLEAR(task->task_coro);
 }
 
@@ -279,9 +285,6 @@ static void
 set_task_coro(TaskObj *task, PyObject *coro)
 {
     assert(coro != NULL);
-    if (PyCoro_CheckExact(coro)) {
-        _PyCoro_SetTask(coro, (PyObject *)task);
-    }
     Py_INCREF(coro);
     Py_XSETREF(task->task_coro, coro);
 }
@@ -2241,6 +2244,130 @@ swap_current_task(asyncio_state *state, PyObject *loop, PyObject *task)
     return prev_task;
 }
 
+static struct root_fut_per_loop *
+runner_make_root(PyObject *loop, PyObject *fut)
+{
+    struct root_fut_per_loop *root = PyMem_Malloc(sizeof(struct root_fut_per_loop));
+    if (root == NULL) {
+        PyErr_NoMemory();
+        return NULL;
+    }
+
+    root->loop = Py_NewRef(loop);
+    root->root = Py_NewRef(fut);
+    return root;
+}
+
+static int
+runner_add_root(PyThreadState *tstate, PyObject *loop, PyObject *fut)
+{
+    _PyThreadStateImpl *ts = (_PyThreadStateImpl *)tstate;
+    struct root_fut_per_loop *prev = NULL;
+    struct root_fut_per_loop *root = ts->asyncio_run_roots;
+
+    // arriving at empty state
+    if (root == NULL) {
+        root = runner_make_root(loop, fut);
+        if (root == NULL) {
+            return 0;
+        }
+        ts->asyncio_run_roots = root;
+        return 1;
+    }
+
+    // replacing an existing entry
+    while (root) {
+        if (root->loop == loop) {
+            Py_CLEAR(root->root);
+            root->root = Py_NewRef(fut);
+            return 1;
+        }
+        prev = root;
+        root = root->next;
+    }
+
+    // appending a new entry
+    root = runner_make_root(loop, fut);
+    if (root == NULL) {
+        return 0;
+    }
+    prev->next = root;
+    return 1;
+}
+
+static int
+runner_remove_root(PyThreadState *tstate, PyObject *loop)
+{
+    _PyThreadStateImpl *ts = (_PyThreadStateImpl *)tstate;
+    struct root_fut_per_loop *prev = NULL;
+    struct root_fut_per_loop *root = ts->asyncio_run_roots;
+    while (root) {
+        if (root->loop != loop) {
+            prev = root;
+            root = root->next;
+            continue;
+        }
+
+        Py_CLEAR(root->root);
+        Py_CLEAR(root->loop);
+        if (prev != NULL) {
+            prev->next = root->next;
+        }
+        else {
+            ts->asyncio_run_roots = NULL;
+        }
+        PyMem_Free(root);
+        return 1;
+    }
+
+    return 0;
+}
+
+static int
+runner_remove_roots(PyThreadState *tstate)
+{
+    _PyThreadStateImpl *ts = (_PyThreadStateImpl *)tstate;
+    struct root_fut_per_loop *root = ts->asyncio_run_roots;
+    while (root) {
+        runner_remove_root(tstate, root->loop);
+        root = root->next;
+    }
+    return 0;
+}
+
+/*[clinic input]
+_asyncio._runner_run
+    loop: object
+    fut: object
+
+Set the root future ran by some runner for a given event loop.
+
+This is a low-level function intended to be used by runners to expose what's being
+executed to out-of-process profilers and debuggers.
+[clinic start generated code]*/
+
+static PyObject *
+_asyncio__runner_run_impl(PyObject *module, PyObject *loop, PyObject *fut)
+/*[clinic end generated code: output=812824e76f4b5352 input=b2d675d5641ad3e8]*/
+{
+    asyncio_state *asyncio_state = get_asyncio_state(module);
+    PyThreadState *tstate = _PyThreadState_GET();
+
+    if (loop == Py_None) {
+        Py_RETURN_NONE;
+    }
+
+    if (fut != Py_None) {
+        if (TaskOrFuture_Check(asyncio_state, fut)) {
+            runner_add_root(tstate, loop, fut);
+        }
+    }
+    else {
+        runner_remove_root(tstate, loop);
+    }
+    Py_RETURN_NONE;
+}
+
 /* ----- Task */
 
 /*[clinic input]
@@ -3960,7 +4087,7 @@ module_clear(PyObject *mod)
     Py_CLEAR(state->iscoroutine_typecache);
 
     Py_CLEAR(state->context_kwname);
-
+    runner_remove_roots(_PyThreadState_GET());
     return 0;
 }
 
@@ -3989,7 +4116,6 @@ module_init(asyncio_state *state)
     if (state->iscoroutine_typecache == NULL) {
         goto fail;
     }
-
 
     state->context_kwname = Py_BuildValue("(s)", "context");
     if (state->context_kwname == NULL) {
@@ -4070,6 +4196,7 @@ static PyMethodDef asyncio_methods[] = {
     _ASYNCIO__ENTER_TASK_METHODDEF
     _ASYNCIO__LEAVE_TASK_METHODDEF
     _ASYNCIO__SWAP_CURRENT_TASK_METHODDEF
+    _ASYNCIO__RUNNER_RUN_METHODDEF
     _ASYNCIO_ALL_TASKS_METHODDEF
     _ASYNCIO_FUTURE_ADD_TO_AWAITED_BY_METHODDEF
     _ASYNCIO_FUTURE_DISCARD_FROM_AWAITED_BY_METHODDEF

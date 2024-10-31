@@ -481,6 +481,66 @@ _asyncio_Future__make_cancelled_error(FutureObj *self, PyObject *Py_UNUSED(ignor
     return _asyncio_Future__make_cancelled_error_impl(self);
 }
 
+PyDoc_STRVAR(_asyncio__runner_run__doc__,
+"_runner_run($module, /, loop, fut)\n"
+"--\n"
+"\n"
+"Set the root future ran by some runner for a given event loop.\n"
+"\n"
+"This is a low-level function intended to be used by runners to expose what\'s being\n"
+"executed to out-of-process profilers and debuggers.");
+
+#define _ASYNCIO__RUNNER_RUN_METHODDEF    \
+    {"_runner_run", _PyCFunction_CAST(_asyncio__runner_run), METH_FASTCALL|METH_KEYWORDS, _asyncio__runner_run__doc__},
+
+static PyObject *
+_asyncio__runner_run_impl(PyObject *module, PyObject *loop, PyObject *fut);
+
+static PyObject *
+_asyncio__runner_run(PyObject *module, PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames)
+{
+    PyObject *return_value = NULL;
+    #if defined(Py_BUILD_CORE) && !defined(Py_BUILD_CORE_MODULE)
+
+    #define NUM_KEYWORDS 2
+    static struct {
+        PyGC_Head _this_is_not_used;
+        PyObject_VAR_HEAD
+        PyObject *ob_item[NUM_KEYWORDS];
+    } _kwtuple = {
+        .ob_base = PyVarObject_HEAD_INIT(&PyTuple_Type, NUM_KEYWORDS)
+        .ob_item = { &_Py_ID(loop), &_Py_ID(fut), },
+    };
+    #undef NUM_KEYWORDS
+    #define KWTUPLE (&_kwtuple.ob_base.ob_base)
+
+    #else  // !Py_BUILD_CORE
+    #  define KWTUPLE NULL
+    #endif  // !Py_BUILD_CORE
+
+    static const char * const _keywords[] = {"loop", "fut", NULL};
+    static _PyArg_Parser _parser = {
+        .keywords = _keywords,
+        .fname = "_runner_run",
+        .kwtuple = KWTUPLE,
+    };
+    #undef KWTUPLE
+    PyObject *argsbuf[2];
+    PyObject *loop;
+    PyObject *fut;
+
+    args = _PyArg_UnpackKeywords(args, nargs, NULL, kwnames, &_parser, 2, 2, 0, argsbuf);
+    if (!args) {
+        goto exit;
+    }
+    loop = args[0];
+    fut = args[1];
+    return_value = _asyncio__runner_run_impl(module, loop, fut);
+
+exit:
+    return return_value;
+}
+
 PyDoc_STRVAR(_asyncio_Task___init____doc__,
 "Task(coro, *, loop=None, name=None, context=None, eager_start=False)\n"
 "--\n"
@@ -1609,4 +1669,4 @@ _asyncio_future_discard_from_awaited_by(PyObject *module, PyObject *const *args,
 exit:
     return return_value;
 }
-/*[clinic end generated code: output=e164592826f13567 input=a9049054013a1b77]*/
+/*[clinic end generated code: output=4968f86d886402b5 input=a9049054013a1b77]*/

@@ -8,6 +8,7 @@ extern "C" {
 #  error "this header requires Py_BUILD_CORE define"
 #endif
 
+#include "pycore_asyncio.h"         // struct root_fut_per_loop
 #include "pycore_brc.h"             // struct _brc_thread_state
 #include "pycore_freelist_state.h"  // struct _Py_freelists
 #include "pycore_mimalloc.h"        // struct _mimalloc_thread_state
@@ -22,6 +23,7 @@ typedef struct _PyThreadStateImpl {
     PyThreadState base;
 
     PyObject *asyncio_running_loop; // Strong reference
+    struct root_fut_per_loop *asyncio_run_roots;
 
     struct _qsbr_thread_state *qsbr;  // only used by free-threaded build
     struct llist_node mem_free_queue; // delayed free queue

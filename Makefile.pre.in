@@ -1174,6 +1174,7 @@ PYTHON_HEADERS= \
 		$(srcdir)/Include/internal/pycore_asdl.h \
 		$(srcdir)/Include/internal/pycore_ast.h \
 		$(srcdir)/Include/internal/pycore_ast_state.h \
+		$(srcdir)/Include/internal/pycore_asyncio.h \
 		$(srcdir)/Include/internal/pycore_atexit.h \
 		$(srcdir)/Include/internal/pycore_audit.h \
 		$(srcdir)/Include/internal/pycore_backoff.h \

@@ -60,14 +60,19 @@
 #endif
 
 struct _Py_AsyncioModuleDebugOffsets {
-    struct _asyncio_task_object {
-        uint64_t size;
-        uint64_t task_name;
-        uint64_t task_awaited_by;
-        uint64_t task_is_task;
-        uint64_t task_awaited_by_is_set;
-        uint64_t task_coro;
-    } asyncio_task_object;
+  struct _asyncio_task_object {
+    uint64_t size;
+    uint64_t task_name;
+    uint64_t task_awaited_by;
+    uint64_t task_is_task;
+    uint64_t task_awaited_by_is_set;
+    uint64_t task_coro;
+  } asyncio_task_object;
+  struct _asyncio_thread_state {
+    uint64_t size;
+    uint64_t asyncio_running_loop;
+    uint64_t asyncio_run_roots;
+  } asyncio_thread_state;
 };
 
 #if defined(__APPLE__) && TARGET_OS_OSX
@@ -1176,7 +1181,7 @@ parse_async_frame_object(
     if (owner == FRAME_OWNED_BY_GENERATOR) {
         err = read_py_ptr(
             pid,
-            address - offsets->gen_object.gi_iframe + offsets->gen_object.gi_task,
+            address - offsets->gen_object.gi_iframe, // FIXME + offsets->gen_object.gi_task,
             task);
         if (err) {
             return -1;
@@ -1369,6 +1374,7 @@ get_async_stack_trace(PyObject* self, PyObject* args)
         return NULL;
     }
 
+    // I AM HERE: change this to look at the current thread's current loop's root task addr.
     uintptr_t address_of_current_frame;
     if (find_running_frame(
         pid, runtime_start_address, &local_debug_offsets,
