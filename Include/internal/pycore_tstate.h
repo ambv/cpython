@@ -23,6 +23,7 @@ typedef struct _PyThreadStateImpl {
     PyThreadState base;
 
     PyObject *asyncio_running_loop; // Strong reference
+    PyObject *asyncio_running_task; // Strong reference
     struct root_fut_per_loop *asyncio_run_roots;
 
     struct _qsbr_thread_state *qsbr;  // only used by free-threaded build

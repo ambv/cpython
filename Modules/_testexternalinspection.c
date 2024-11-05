@@ -72,6 +72,7 @@ struct _Py_AsyncioModuleDebugOffsets {
   struct _asyncio_thread_state {
     uint64_t size;
     uint64_t asyncio_running_loop;
+    uint64_t asyncio_running_task;
     uint64_t asyncio_run_roots;
   } asyncio_thread_state;
 };
@@ -1151,12 +1152,10 @@ parse_async_frame_object(
     PyObject* result,
     struct _Py_DebugOffsets* offsets,
     uintptr_t address,
-    uintptr_t* task,
-    uintptr_t* previous_frame
+    uintptr_t* previous_frame,
+    bool expect_async_frame
 ) {
     int err;
-
-    *task = (uintptr_t)NULL;
 
     ssize_t bytes_read = read_memory(
         pid,
@@ -1175,18 +1174,19 @@ parse_async_frame_object(
         return -1;
     }
 
+    // printf("owner: %d\n", owner);
     if (owner == FRAME_OWNED_BY_CSTACK) {
-        return 0;
+        return 0;  // C frame
     }
 
-    if (owner == FRAME_OWNED_BY_GENERATOR) {
-        err = read_py_ptr(
-            pid,
-            address - offsets->gen_object.gi_iframe, // FIXME + offsets->gen_object.gi_task,
-            task);
-        if (err) {
-            return -1;
-        }
+    if (owner != FRAME_OWNED_BY_GENERATOR
+        && owner != FRAME_OWNED_BY_THREAD) {
+        PyErr_Format(PyExc_RuntimeError, "Unhandled frame owner %d.\n", owner);
+        return -1;
+    }
+
+    if (owner == FRAME_OWNED_BY_THREAD && expect_async_frame) {
+        return 0;  // sync Python frame
     }
 
     uintptr_t address_of_code_object;
@@ -1203,8 +1203,12 @@ parse_async_frame_object(
         return 0;
     }
 
-    return parse_code_object(
-        pid, result, offsets, address_of_code_object, previous_frame);
+    if (parse_code_object(
+        pid, result, offsets, address_of_code_object, previous_frame)) {
+        return -1;
+    }
+
+    return 1;  // async frame
 }
 
 static int
@@ -1297,6 +1301,77 @@ find_running_frame(
     }
 
     *frame = (uintptr_t)NULL;
+    return 0;
+}
+
+static int
+find_running_task(
+    int pid,
+    uintptr_t runtime_start_address,
+    _Py_DebugOffsets *local_debug_offsets,
+    struct _Py_AsyncioModuleDebugOffsets *async_offsets,
+    uintptr_t *running_task_addr
+) {
+    *running_task_addr = (uintptr_t)NULL;
+
+    off_t interpreter_state_list_head =
+        local_debug_offsets->runtime_state.interpreters_head;
+
+    uintptr_t address_of_interpreter_state;
+    int bytes_read = read_memory(
+            pid,
+            runtime_start_address + interpreter_state_list_head,
+            sizeof(void*),
+            &address_of_interpreter_state);
+    if (bytes_read == -1) {
+        return -1;
+    }
+
+    if (address_of_interpreter_state == 0) {
+        PyErr_SetString(PyExc_RuntimeError, "No interpreter state found");
+        return -1;
+    }
+
+    uintptr_t address_of_thread;
+    bytes_read = read_memory(
+            pid,
+            address_of_interpreter_state +
+                local_debug_offsets->interpreter_state.threads_head,
+            sizeof(void*),
+            &address_of_thread);
+    if (bytes_read == -1) {
+        return -1;
+    }
+
+    uintptr_t address_of_running_loop;
+    // No Python frames are available for us (can happen at tear-down).
+    if ((void*)address_of_thread == NULL) {
+        return 0;
+    }
+
+    bytes_read = read_py_ptr(
+        pid,
+        address_of_thread
+        + async_offsets->asyncio_thread_state.asyncio_running_loop,
+        &address_of_running_loop);
+    if (bytes_read == -1) {
+        return -1;
+    }
+
+    // no asyncio loop is now running
+    if ((void*)address_of_running_loop == NULL) {
+        return 0;
+    }
+
+    int err = read_ptr(
+        pid,
+        address_of_thread
+        + async_offsets->asyncio_thread_state.asyncio_running_task,
+        running_task_addr);
+    if (err) {
+        return -1;
+    }
+
     return 0;
 }
 
@@ -1476,36 +1551,44 @@ get_async_stack_trace(PyObject* self, PyObject* args)
         return NULL;
     }
 
-    uintptr_t root_task_addr = (uintptr_t)NULL;
-    if (find_root_fut(
+    uintptr_t running_task_addr = (uintptr_t)NULL;
+    if (find_running_task(
         pid, runtime_start_address, &local_debug_offsets, &local_async_debug,
-        &root_task_addr)
+        &running_task_addr)
     ) {
         return NULL;
     }
 
-    // Need to recreate that.
-    /*while ((void*)address_of_current_frame != NULL) {
-        int err = parse_async_frame_object(
+    uintptr_t address_of_current_frame;
+    if (find_running_frame(
+        pid, runtime_start_address, &local_debug_offsets,
+        &address_of_current_frame)
+    ) {
+        return NULL;
+    }
+
+    // this roughly replicates asyncio.stack.capture_call_graph
+    bool expect_async_frame = false;
+    while ((void*)address_of_current_frame != NULL) {
+        int res = parse_async_frame_object(
             pid,
             calls,
             &local_debug_offsets,
             address_of_current_frame,
-            &root_task_addr,
-            &address_of_current_frame
+            &address_of_current_frame,
+            expect_async_frame
         );
-        if (err) {
+        if (res < 0) {
             goto result_err;
         }
-
-        if ((void*)root_task_addr != NULL) {
-            break;
+        if (res == 1) {
+            expect_async_frame = true;
         }
-    }*/
+    }
 
-    if ((void*)root_task_addr != NULL) {
+    if ((void*)running_task_addr != NULL) {
         PyObject *tn = parse_task_name(
-            pid, &local_debug_offsets, &local_async_debug, root_task_addr);
+            pid, &local_debug_offsets, &local_async_debug, running_task_addr);
         if (tn == NULL) {
             goto result_err;
         }
@@ -1525,13 +1608,14 @@ get_async_stack_trace(PyObject* self, PyObject* args)
         }
 
         if (parse_task_awaited_by(
-            pid, &local_debug_offsets, &local_async_debug, root_task_addr, awaited_by)
+            pid, &local_debug_offsets, &local_async_debug, running_task_addr, awaited_by)
         ) {
             goto result_err;
         }
     }
-
-
+    else {
+        printf("No running task found\n");
+    }
     return result;
 
 result_err:

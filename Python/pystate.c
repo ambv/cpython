@@ -1668,6 +1668,7 @@ PyThreadState_Clear(PyThreadState *tstate)
     Py_CLEAR(tstate->threading_local_sentinel);
 
     Py_CLEAR(((_PyThreadStateImpl *)tstate)->asyncio_running_loop);
+    Py_CLEAR(((_PyThreadStateImpl *)tstate)->asyncio_running_task);
     // FIXME: runner_remove_roots(tstate);
 
     Py_CLEAR(tstate->dict);

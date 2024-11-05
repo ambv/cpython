@@ -116,6 +116,7 @@ typedef struct _Py_AsyncioModuleDebugOffsets {
   struct _asyncio_thread_state {
     uint64_t size;
     uint64_t asyncio_running_loop;
+    uint64_t asyncio_running_task;
     uint64_t asyncio_run_roots;
   } asyncio_thread_state;
 } Py_AsyncioModuleDebugOffsets;
@@ -132,6 +133,7 @@ GENERATE_DEBUG_SECTION(AsyncioDebug, Py_AsyncioModuleDebugOffsets AsyncioDebug)
        .asyncio_thread_state = {
            .size = sizeof(_PyThreadStateImpl),
            .asyncio_running_loop = offsetof(_PyThreadStateImpl, asyncio_running_loop),
+           .asyncio_running_task = offsetof(_PyThreadStateImpl, asyncio_running_task),
            .asyncio_run_roots = offsetof(_PyThreadStateImpl, asyncio_run_roots),
        }};
 
@@ -2163,7 +2165,10 @@ enter_task(asyncio_state *state, PyObject *loop, PyObject *task)
         Py_DECREF(item);
         return -1;
     }
-    Py_DECREF(item);
+
+    _PyThreadStateImpl *ts = (_PyThreadStateImpl *)_PyThreadState_GET();
+    assert(ts->asyncio_running_task == NULL);
+    ts->asyncio_running_task = item;  // strong ref
     return 0;
 }
 
@@ -2188,7 +2193,6 @@ leave_task_predicate(PyObject *item, void *task)
 
 static int
 leave_task(asyncio_state *state, PyObject *loop, PyObject *task)
-/*[clinic end generated code: output=0ebf6db4b858fb41 input=51296a46313d1ad8]*/
 {
     int res = _PyDict_DelItemIf(state->current_tasks, loop,
                                 leave_task_predicate, task);
@@ -2196,6 +2200,11 @@ leave_task(asyncio_state *state, PyObject *loop, PyObject *task)
         // task was not found
         return err_leave_task(Py_None, task);
     }
+
+    _PyThreadStateImpl *ts = (_PyThreadStateImpl *)_PyThreadState_GET();
+    assert(ts->asyncio_running_task == task);
+    ts->asyncio_running_task = NULL;
+    Py_DECREF(task);
     return res;
 }
 
