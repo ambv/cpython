@@ -52,6 +52,7 @@
 #endif
 #include "Python.h"
 #include <internal/pycore_debug_offsets.h>  // _Py_DebugOffsets
+#include <internal/pycore_asyncio.h>        // root_fut_per_loop
 #include <internal/pycore_frame.h>          // FRAME_OWNED_BY_CSTACK
 #include <internal/pycore_stackref.h>       // Py_TAG_BITS
 
@@ -1299,6 +1300,93 @@ find_running_frame(
     return 0;
 }
 
+static int
+find_root_fut(
+    int pid,
+    uintptr_t runtime_start_address,
+    _Py_DebugOffsets *local_debug_offsets,
+    struct _Py_AsyncioModuleDebugOffsets *async_offsets,
+    uintptr_t *root_task_addr
+) {
+    *root_task_addr = (uintptr_t)NULL;
+
+    off_t interpreter_state_list_head =
+        local_debug_offsets->runtime_state.interpreters_head;
+
+    uintptr_t address_of_interpreter_state;
+    int bytes_read = read_memory(
+            pid,
+            runtime_start_address + interpreter_state_list_head,
+            sizeof(void*),
+            &address_of_interpreter_state);
+    if (bytes_read == -1) {
+        return -1;
+    }
+
+    if (address_of_interpreter_state == 0) {
+        PyErr_SetString(PyExc_RuntimeError, "No interpreter state found");
+        return -1;
+    }
+
+    uintptr_t address_of_thread;
+    bytes_read = read_memory(
+            pid,
+            address_of_interpreter_state +
+                local_debug_offsets->interpreter_state.threads_head,
+            sizeof(void*),
+            &address_of_thread);
+    if (bytes_read == -1) {
+        return -1;
+    }
+
+    uintptr_t address_of_running_loop;
+    // No Python frames are available for us (can happen at tear-down).
+    if ((void*)address_of_thread == NULL) {
+        return 0;
+    }
+
+    bytes_read = read_py_ptr(
+        pid,
+        address_of_thread
+        + async_offsets->asyncio_thread_state.asyncio_running_loop,
+        &address_of_running_loop);
+    if (bytes_read == -1) {
+        return -1;
+    }
+
+    // no asyncio loop is now running
+    if ((void*)address_of_running_loop == NULL) {
+        return 0;
+    }
+
+    uintptr_t address_of_roots;
+    struct root_fut_per_loop root;
+    int err = read_ptr(
+        pid,
+        address_of_thread
+        + async_offsets->asyncio_thread_state.asyncio_run_roots,
+        &address_of_roots);
+    if (err) {
+        return -1;
+    }
+
+    bytes_read = read_memory(
+        pid,
+        address_of_roots,
+        sizeof(struct root_fut_per_loop),
+        &root);
+    if (bytes_read == -1) {
+        return -1;
+    }
+
+    // In the wild there can be more than one root (either when there's multiple threads
+    // with own loops or multiple interpreters with one or more threads). In our tests
+    // we only start the one.
+    assert((uintptr_t)root.loop == address_of_running_loop);
+    *root_task_addr = (uintptr_t)root.root;
+    return 0;
+}
+
 static PyObject*
 get_stack_trace(PyObject* self, PyObject* args)
 {
@@ -1374,15 +1462,6 @@ get_async_stack_trace(PyObject* self, PyObject* args)
         return NULL;
     }
 
-    // I AM HERE: change this to look at the current thread's current loop's root task addr.
-    uintptr_t address_of_current_frame;
-    if (find_running_frame(
-        pid, runtime_start_address, &local_debug_offsets,
-        &address_of_current_frame)
-    ) {
-        return NULL;
-    }
-
     PyObject* result = PyList_New(1);
     if (result == NULL) {
         return NULL;
@@ -1398,7 +1477,15 @@ get_async_stack_trace(PyObject* self, PyObject* args)
     }
 
     uintptr_t root_task_addr = (uintptr_t)NULL;
-    while ((void*)address_of_current_frame != NULL) {
+    if (find_root_fut(
+        pid, runtime_start_address, &local_debug_offsets, &local_async_debug,
+        &root_task_addr)
+    ) {
+        return NULL;
+    }
+
+    // Need to recreate that.
+    /*while ((void*)address_of_current_frame != NULL) {
         int err = parse_async_frame_object(
             pid,
             calls,
@@ -1414,7 +1501,7 @@ get_async_stack_trace(PyObject* self, PyObject* args)
         if ((void*)root_task_addr != NULL) {
             break;
         }
-    }
+    }*/
 
     if ((void*)root_task_addr != NULL) {
         PyObject *tn = parse_task_name(
