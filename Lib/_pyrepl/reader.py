@@ -25,48 +25,16 @@ import sys
 
 from contextlib import contextmanager
 from dataclasses import dataclass, field, fields
-import unicodedata
-from _colorize import can_colorize, ANSIColors  # type: ignore[import-not-found]
-
+from _colorize import can_colorize, ANSIColors
 
 from . import commands, console, input
-from .utils import ANSI_ESCAPE_SEQUENCE, wlen, str_width
+from .utils import ANSI_ESCAPE_SEQUENCE, wlen, str_width, disp_str, gen_colors
 from .trace import trace
 
 
 # types
 Command = commands.Command
 from .types import Callback, SimpleContextManager, KeySpec, CommandName
-
-
-def disp_str(buffer: str) -> tuple[str, list[int]]:
-    """disp_str(buffer:string) -> (string, [int])
-
-    Return the string that should be the printed representation of
-    |buffer| and a list detailing where the characters of |buffer|
-    get used up.  E.g.:
-
-    >>> disp_str(chr(3))
-    ('^C', [1, 0])
-
-    """
-    b: list[int] = []
-    s: list[str] = []
-    for c in buffer:
-        if c == '\x1a':
-            s.append(c)
-            b.append(2)
-        elif ord(c) < 128:
-            s.append(c)
-            b.append(1)
-        elif unicodedata.category(c).startswith("C"):
-            c = r"\u%04x" % ord(c)
-            s.append(c)
-            b.append(len(c))
-        else:
-            s.append(c)
-            b.append(str_width(c))
-    return "".join(s), b
 
 
 # syntax classes:
@@ -348,6 +316,10 @@ class Reader:
 
         prompt_from_cache = (offset and self.buffer[offset - 1] != "\n")
 
+        if self.can_colorize:
+            colors = list(gen_colors(self.get_unicode()))
+        else:
+            colors = []
         lines = "".join(self.buffer[offset:]).split("\n")
 
         cursor_found = False
@@ -376,7 +348,7 @@ class Reader:
                 screeninfo.append((0, []))
             pos -= ll + 1
             prompt, lp = self.process_prompt(prompt)
-            l, l2 = disp_str(line)
+            l, l2 = disp_str(line, offset, colors)
             wrapcount = (wlen(l) + lp) // self.console.width
             if wrapcount == 0:
                 offset += ll + 1  # Takes all of the line plus the newline

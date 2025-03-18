@@ -1,8 +1,13 @@
+from __future__ import annotations
 import io
 import os
 import sys
 
 COLORIZE = True
+
+# types
+if False:
+    from typing import IO
 
 
 class ANSIColors:
@@ -26,14 +31,16 @@ for attr in dir(NoColors):
         setattr(NoColors, attr, "")
 
 
-def get_colors(colorize: bool = False, *, file=None) -> ANSIColors:
+def get_colors(
+    colorize: bool = False, *, file: IO[str] | IO[bytes] | None = None
+) -> ANSIColors:
     if colorize or can_colorize(file=file):
         return ANSIColors()
     else:
         return NoColors
 
 
-def can_colorize(*, file=None) -> bool:
+def can_colorize(*, file: IO[str] | IO[bytes] | None = None) -> bool:
     if file is None:
         file = sys.stdout
 
@@ -66,4 +73,4 @@ def can_colorize(*, file=None) -> bool:
     try:
         return os.isatty(file.fileno())
     except io.UnsupportedOperation:
-        return file.isatty()
+        return hasattr(file, "isatty") and file.isatty()

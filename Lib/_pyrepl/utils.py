@@ -2,7 +2,37 @@ import re
 import unicodedata
 import functools
 
+from idlelib import colorizer
+from typing import cast, Iterator, Literal, Match, NamedTuple, Pattern
+from _colorize import ANSIColors
+
+from .trace import trace
+
 ANSI_ESCAPE_SEQUENCE = re.compile(r"\x1b\[[ -@]*[A-~]")
+COLORIZE_RE: Pattern[str] = colorizer.prog
+COLORIZE_GROUP_NAME_MAP: dict[str, str] = colorizer.prog_group_name_to_tag
+
+type ColorTag = (
+    Literal["KEYWORD"]
+    | Literal["BUILTIN"]
+    | Literal["COMMENT"]
+    | Literal["STRING"]
+    | Literal["MATCH_SOFTKW"]
+    | Literal["CASE_SOFTKW"]
+    | Literal["CASE_SOFTKW2"]
+    | Literal["CASE_DEFAULT_UNDERSCORE"]
+    | Literal["SYNC"]
+)
+
+
+class Span(NamedTuple):
+    start: int
+    end: int
+
+
+class ColorSpan(NamedTuple):
+    span: Span
+    tag: ColorTag
 
 
 @functools.cache
@@ -23,3 +53,82 @@ def wlen(s: str) -> int:
     sequence = ANSI_ESCAPE_SEQUENCE.findall(s)
     ctrl_z_cnt = s.count('\x1a')
     return length - sum(len(i) for i in sequence) + ctrl_z_cnt
+
+
+def gen_colors(buffer: str) -> Iterator[ColorSpan]:
+    """Returns a list of index spans to color using the given color tag.
+
+    The input `buffer` should be a valid start of a Python code block, i.e.
+    it cannot be a block starting in the middle of a multiline string.
+    """
+    for match in COLORIZE_RE.finditer(buffer):
+        yield from gen_color_spans(match)
+
+
+def gen_color_spans(re_match: Match[str]) -> Iterator[ColorSpan]:
+    """Generate non-empty color spans.
+
+    Span indexing is inclusive on both ends.
+    """
+    re_span = re_match.span()
+    span = Span(re_span[0], re_span[1] - 1)
+    for tag, data in re_match.groupdict().items():
+        if data:
+            yield ColorSpan(span, cast(ColorTag, tag))
+
+
+def disp_str(
+    buffer: str, offset: int, colors: list[ColorSpan]
+) -> tuple[str, list[int]]:
+    """Return a printable variant of `buffer` with usage metadata.
+
+    Note: the `colors` list is partially consumed within.
+
+    Return the string that should be the printed representation of
+    |buffer| and a list detailing where the characters of |buffer|
+    get used up.  E.g.:
+
+    >>> disp_str(chr(3))
+    ('^C', [1, 0])
+
+    """
+    trace("disp_str = {buffer}", buffer=repr(buffer))
+    b: list[int] = []
+    s: list[str] = []
+
+    while colors and colors[0].span.end < offset:
+        colors.pop(0)
+
+    # maybe we're continuing a multiline string color...
+    if colors and colors[0].span.start < offset:
+        s.append(ANSIColors.BOLD_GREEN)
+        b.append(0)
+
+    for i, c in enumerate(buffer, offset):
+        if colors and colors[0].span.start == i:
+            s.append(ANSIColors.BOLD_GREEN)
+            b.append(0)
+        if c == '\x1a':
+            s.append(c)
+            b.append(2)
+        elif ord(c) < 128:
+            s.append(c)
+            b.append(1)
+        elif unicodedata.category(c).startswith("C"):
+            c = r"\u%04x" % ord(c)
+            s.append(c)
+            b.append(len(c))
+        else:
+            s.append(c)
+            b.append(str_width(c))
+        if colors and colors[0].span.end == i:
+            s.append(ANSIColors.RESET)
+            b.append(0)
+            colors.pop(0)
+
+    # if we're in a multiline string, close the color to keep things clean
+    if colors and colors[0].span.start < i and colors[0].span.end > i:
+        s.append(ANSIColors.RESET)
+        b.append(0)
+
+    return "".join(s), b
