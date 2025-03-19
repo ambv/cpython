@@ -33,6 +33,15 @@ class ColorSpan(NamedTuple):
     tag: ColorTag
 
 
+TAG_TO_ANSI: dict[ColorTag, str] = {
+    "KEYWORD": ANSIColors.BOLD_BLUE,
+    "BUILTIN": ANSIColors.CYAN,
+    "COMMENT": ANSIColors.RED,
+    "STRING": ANSIColors.GREEN,
+    "SYNC": ANSIColors.RESET,
+}
+
+
 @functools.cache
 def str_width(c: str) -> int:
     if ord(c) < 128:
@@ -102,11 +111,11 @@ def disp_str(
 
     # maybe we're continuing a multiline string color...
     if colors and colors[0].span.start < offset:
-        s.append(ANSIColors.GREEN)
+        s.append(TAG_TO_ANSI[colors[0].tag])
 
     for i, c in enumerate(buffer, offset):
         if colors and colors[0].span.start == i:
-            s.append(ANSIColors.GREEN)
+            s.append(TAG_TO_ANSI[colors[0].tag])
         if c == '\x1a':
             s.append(c)
             b.append(2)
@@ -121,7 +130,7 @@ def disp_str(
             s.append(c)
             b.append(str_width(c))
         if colors and colors[0].span.end == i:
-            s.append(ANSIColors.RESET)
+            s.append(TAG_TO_ANSI["SYNC"])
             colors.pop(0)
 
     # if we're in a multiline string, close the color to keep things clean
