@@ -19,10 +19,6 @@ type ColorTag = (
     | Literal["BUILTIN"]
     | Literal["COMMENT"]
     | Literal["STRING"]
-    | Literal["MATCH_SOFTKW"]
-    | Literal["CASE_SOFTKW"]
-    | Literal["CASE_SOFTKW2"]
-    | Literal["CASE_DEFAULT_UNDERSCORE"]
     | Literal["SYNC"]
 )
 
@@ -81,6 +77,7 @@ def gen_color_spans(re_match: Match[str]) -> Iterator[ColorSpan]:
     span = Span(re_span[0], re_span[1] - 1)
     for tag, data in re_match.groupdict().items():
         if data:
+            tag = COLORIZE_GROUP_NAME_MAP.get(tag, tag)
             yield ColorSpan(span, cast(ColorTag, tag))
 
 
@@ -91,15 +88,12 @@ def disp_str(
 
     Note: the `colors` list is partially consumed within.
 
-    Return the string that should be the printed representation of
-    |buffer| and a list detailing where the characters of |buffer|
-    get used up.  E.g.:
-
-    >>> disp_str(chr(3))
-    ('^C', [1, 0])
+    The list details where the characters of buffer get used up.
+    Examples:
+    >>> utils.disp_str("a = 9", offset=0, colors=[])
+    ('a = 9', [1, 1, 1, 1, 1])
 
     """
-    trace("disp_str = {buffer}", buffer=repr(buffer))
     b: list[int] = []
     s: list[str] = []
 
@@ -109,12 +103,10 @@ def disp_str(
     # maybe we're continuing a multiline string color...
     if colors and colors[0].span.start < offset:
         s.append(ANSIColors.GREEN)
-        b.append(0)
 
     for i, c in enumerate(buffer, offset):
         if colors and colors[0].span.start == i:
             s.append(ANSIColors.GREEN)
-            b.append(0)
         if c == '\x1a':
             s.append(c)
             b.append(2)
@@ -130,7 +122,6 @@ def disp_str(
             b.append(str_width(c))
         if colors and colors[0].span.end == i:
             s.append(ANSIColors.RESET)
-            b.append(0)
             colors.pop(0)
 
     # if we're in a multiline string, close the color to keep things clean
@@ -138,4 +129,6 @@ def disp_str(
         s.append(ANSIColors.RESET)
         b.append(0)
 
-    return "".join(s), b
+    result = "".join(s)
+    trace("disp_str({buffer}) = {result}, {b}", buffer=repr(buffer), result=repr(result), b=b)
+    return result, b
