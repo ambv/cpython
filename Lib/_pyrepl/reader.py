@@ -37,8 +37,7 @@ Command = commands.Command
 from .types import Callback, SimpleContextManager, KeySpec, CommandName
 
 
-# syntax classes:
-
+# syntax classes
 SYNTAX_WHITESPACE, SYNTAX_WORD, SYNTAX_SYMBOL = range(3)
 
 
@@ -143,16 +142,17 @@ class Reader:
     Instance variables of note include:
 
       * buffer:
-        A *list* (*not* a string at the moment :-) containing all the
-        characters that have been entered.
+        A per-character list containing all the characters that have been
+        entered. Does not include color information.
       * console:
         Hopefully encapsulates the OS dependent stuff.
       * pos:
         A 0-based index into 'buffer' for where the insertion point
         is.
       * screeninfo:
-        Ahem.  This list contains some info needed to move the
-        insertion point around reasonably efficiently.
+        A list of screen position tuples. Each list element is a tuple
+        representing information on visible line length for a given line.
+        Allows for efficient skipping of color escape sequences.
       * cxy, lxy:
         the position of the insertion point in screen ...
       * syntax_table:
