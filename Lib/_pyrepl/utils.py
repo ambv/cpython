@@ -3,7 +3,7 @@ import unicodedata
 import functools
 
 from idlelib import colorizer
-from typing import cast, Iterator, Literal, Match, NamedTuple, Pattern
+from typing import cast, Iterator, Literal, Match, NamedTuple, Pattern, Self
 from _colorize import ANSIColors
 
 from .trace import trace
@@ -12,6 +12,8 @@ ANSI_ESCAPE_SEQUENCE = re.compile(r"\x1b\[[ -@]*[A-~]")
 ZERO_WIDTH_BRACKET = re.compile(r"\x01.*?\x02")
 ZERO_WIDTH_TRANS = str.maketrans({"\x01": "", "\x02": ""})
 COLORIZE_RE: Pattern[str] = colorizer.prog
+IDENTIFIER_RE: Pattern[str] = colorizer.idprog
+IDENTIFIERS_AFTER = {"def", "class"}
 COLORIZE_GROUP_NAME_MAP: dict[str, str] = colorizer.prog_group_name_to_tag
 
 type ColorTag = (
@@ -19,13 +21,20 @@ type ColorTag = (
     | Literal["BUILTIN"]
     | Literal["COMMENT"]
     | Literal["STRING"]
+    | Literal["DEFINITION"]
     | Literal["SYNC"]
 )
 
 
 class Span(NamedTuple):
+    """Span indexing that's inclusive on both ends."""
     start: int
     end: int
+
+    @classmethod
+    def from_re(cls, m: Match[str], group: int | str) -> Self:
+        re_span = m.span(group)
+        return cls(re_span[0], re_span[1] - 1)
 
 
 class ColorSpan(NamedTuple):
@@ -38,6 +47,7 @@ TAG_TO_ANSI: dict[ColorTag, str] = {
     "BUILTIN": ANSIColors.CYAN,
     "COMMENT": ANSIColors.RED,
     "STRING": ANSIColors.GREEN,
+    "DEFINITION": ANSIColors.BOLD_WHITE,
     "SYNC": ANSIColors.RESET,
 }
 
@@ -78,16 +88,17 @@ def gen_colors(buffer: str) -> Iterator[ColorSpan]:
 
 
 def gen_color_spans(re_match: Match[str]) -> Iterator[ColorSpan]:
-    """Generate non-empty color spans.
-
-    Span indexing is inclusive on both ends.
-    """
-    re_span = re_match.span()
-    span = Span(re_span[0], re_span[1] - 1)
+    """Generate non-empty color spans."""
     for tag, data in re_match.groupdict().items():
-        if data:
-            tag = COLORIZE_GROUP_NAME_MAP.get(tag, tag)
-            yield ColorSpan(span, cast(ColorTag, tag))
+        if not data:
+            continue
+        span = Span.from_re(re_match, tag)
+        tag = COLORIZE_GROUP_NAME_MAP.get(tag, tag)
+        yield ColorSpan(span, cast(ColorTag, tag))
+        if data in IDENTIFIERS_AFTER:
+            if name_match := IDENTIFIER_RE.match(re_match.string, span.end + 1):
+                span = Span.from_re(name_match, 1)
+                yield ColorSpan(span, "DEFINITION")
 
 
 def disp_str(
