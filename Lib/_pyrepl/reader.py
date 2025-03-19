@@ -28,7 +28,7 @@ from dataclasses import dataclass, field, fields
 from _colorize import can_colorize, ANSIColors
 
 from . import commands, console, input
-from .utils import ANSI_ESCAPE_SEQUENCE, wlen, str_width, disp_str, gen_colors
+from .utils import wlen, unbracket, disp_str, gen_colors
 from .trace import trace
 
 
@@ -393,42 +393,14 @@ class Reader:
 
     @staticmethod
     def process_prompt(prompt: str) -> tuple[str, int]:
-        """Process the prompt.
+        r"""Return a tuple with the prompt string and its visible length.
 
-        This means calculate the length of the prompt. The character \x01
-        and \x02 are used to bracket ANSI control sequences and need to be
-        excluded from the length calculation.  So also a copy of the prompt
-        is returned with these control characters removed."""
-
-        # The logic below also ignores the length of common escape
-        # sequences if they were not explicitly within \x01...\x02.
-        # They are CSI (or ANSI) sequences  ( ESC [ ... LETTER )
-
-        # wlen from utils already excludes ANSI_ESCAPE_SEQUENCE chars,
-        # which breaks the logic below so we redefine it here.
-        def wlen(s: str) -> int:
-            return sum(str_width(i) for i in s)
-
-        out_prompt = ""
-        l = wlen(prompt)
-        pos = 0
-        while True:
-            s = prompt.find("\x01", pos)
-            if s == -1:
-                break
-            e = prompt.find("\x02", s)
-            if e == -1:
-                break
-            # Found start and end brackets, subtract from string length
-            l = l - (e - s + 1)
-            keep = prompt[pos:s]
-            l -= sum(map(wlen, ANSI_ESCAPE_SEQUENCE.findall(keep)))
-            out_prompt += keep + prompt[s + 1 : e]
-            pos = e + 1
-        keep = prompt[pos:]
-        l -= sum(map(wlen, ANSI_ESCAPE_SEQUENCE.findall(keep)))
-        out_prompt += keep
-        return out_prompt, l
+        The prompt string has the zero-width brackets recognized by shells
+        (\x01 and \x02) removed.  The length ignores anything between those
+        brackets as well as any ANSI escape sequences.
+        """
+        out_prompt = unbracket(prompt)
+        return out_prompt, wlen(prompt)
 
     def bow(self, p: int | None = None) -> int:
         """Return the 0-based index of the word break preceding p most
@@ -592,6 +564,7 @@ class Reader:
     def update_cursor(self) -> None:
         """Move the cursor to reflect changes in self.pos"""
         self.cxy = self.pos2xy()
+        trace("update_cursor = {cxy}", cxy=self.cxy)
         self.console.move_cursor(*self.cxy)
 
     def after_command(self, cmd: Command) -> None:

@@ -9,6 +9,8 @@ from _colorize import ANSIColors
 from .trace import trace
 
 ANSI_ESCAPE_SEQUENCE = re.compile(r"\x1b\[[ -@]*[A-~]")
+ZERO_WIDTH_BRACKET = re.compile(r"\x01.*?\x02")
+ZERO_WIDTH_TRANS = str.maketrans({"\x01": "", "\x02": ""})
 COLORIZE_RE: Pattern[str] = colorizer.prog
 COLORIZE_GROUP_NAME_MAP: dict[str, str] = colorizer.prog_group_name_to_tag
 
@@ -48,11 +50,16 @@ def str_width(c: str) -> int:
 def wlen(s: str) -> int:
     if len(s) == 1 and s != '\x1a':
         return str_width(s)
+    s = ZERO_WIDTH_BRACKET.sub("", s)
     length = sum(str_width(i) for i in s)
     # remove lengths of any escape sequences
     sequence = ANSI_ESCAPE_SEQUENCE.findall(s)
     ctrl_z_cnt = s.count('\x1a')
     return length - sum(len(i) for i in sequence) + ctrl_z_cnt
+
+
+def unbracket(s: str) -> str:
+    return s.translate(ZERO_WIDTH_TRANS)
 
 
 def gen_colors(buffer: str) -> Iterator[ColorSpan]:
@@ -101,12 +108,12 @@ def disp_str(
 
     # maybe we're continuing a multiline string color...
     if colors and colors[0].span.start < offset:
-        s.append(ANSIColors.BOLD_GREEN)
+        s.append(ANSIColors.GREEN)
         b.append(0)
 
     for i, c in enumerate(buffer, offset):
         if colors and colors[0].span.start == i:
-            s.append(ANSIColors.BOLD_GREEN)
+            s.append(ANSIColors.GREEN)
             b.append(0)
         if c == '\x1a':
             s.append(c)
