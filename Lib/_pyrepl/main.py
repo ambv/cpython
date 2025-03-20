@@ -16,7 +16,6 @@ try:
 except Exception as e:
     CAN_USE_PYREPL = False
     FAIL_REASON = f"warning: can't use pyrepl: {e}"
-    raise
 else:
     CAN_USE_PYREPL = True
     FAIL_REASON = ""
