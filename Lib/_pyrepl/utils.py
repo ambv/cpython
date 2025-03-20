@@ -117,6 +117,9 @@ def disp_str(
     b: list[int] = []
     s: list[str] = []
 
+    if not buffer:
+        return "", b
+
     while colors and colors[0].span.end < offset:
         colors.pop(0)
 
