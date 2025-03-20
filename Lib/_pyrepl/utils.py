@@ -109,64 +109,83 @@ def gen_color_spans(re_match: Match[str]) -> Iterator[ColorSpan]:
 
 
 def disp_str(
-    buffer: str, offset: int, colors: list[ColorSpan]
+    buffer: str, colors: list[ColorSpan] | None = None, start_index: int = 0
 ) -> tuple[CharBuffer, CharWidths]:
-    """Decompose the input buffer into a printable variant with applied colors.
+    r"""Decompose the input buffer into a printable variant with applied colors.
     
     Returns a tuple of two lists:
     - the first list is the input buffer, character by character, with color
       escape codes added (while those codes contain multiple ASCII characters,
-      each code is considered atomic);
-    - the second list is the visible width of each character in the first
+      each code is considered atomic *and is attached for the corresponding
+      visible character*);
+    - the second list is the visible width of each character in the input
       buffer.
 
-    Note: the `colors` list is partially consumed within.
+    Note on colors:
+    - The `colors` list, if provided, is partially consumed within. We're using
+      a list and not a generator since we need to hold onto the current
+      unfinished span between calls to disp_str in case of multiline strings.
+    - The `colors` list is computed from the start of the input block. `buffer`
+      is only a subset of that input block, a single line within. This is why
+      we need `start_index` to inform us which position is the start of `buffer`
+      actually within user input. This allows us to match color spans correctly.
 
     Examples:
-    >>> utils.disp_str("a = 9", offset=0, colors=[])
+    >>> utils.disp_str("a = 9")
     (['a', ' ', '=', ' ', '9'], [1, 1, 1, 1, 1])
 
+    >>> line = "while 1:"
+    >>> colors = list(utils.gen_colors(line))
+    >>> utils.disp_str(line, colors=colors)
+    (['\x1b[1;34mw', 'h', 'i', 'l', 'e\x1b[0m', ' ', '1', ':'], [1, 1, 1, 1, 1, 1, 1, 1])
+
     """
-    s: CharBuffer = []
-    b: CharWidths = []
+    chars: CharBuffer = []
+    char_widths: CharWidths = []
 
     if not buffer:
-        return s, b
+        return chars, char_widths
 
-    while colors and colors[0].span.end < offset:
+    while colors and colors[0].span.end < start_index:
+        # move past irrelevant spans
         colors.pop(0)
 
-    # maybe we're continuing a multiline string color...
-    if colors and colors[0].span.start < offset:
-        s.append(TAG_TO_ANSI[colors[0].tag])
-        b.append(0)
-    for i, c in enumerate(buffer, offset):
-        if colors and colors[0].span.start == i:
-            s.append(TAG_TO_ANSI[colors[0].tag])
-            b.append(0)
-        if c == '\x1a':
-            # TODO: I don't like this CTRL-Z being singled out for Windows.
-            s.append(c)
-            b.append(2)
+    pre_color = ""
+    post_color = ""
+    if colors and colors[0].span.start < start_index:
+        # looks like we're continuing a previous color (e.g. a multiline str)
+        pre_color = TAG_TO_ANSI[colors[0].tag]
+
+    for i, c in enumerate(buffer, start_index):
+        if colors and colors[0].span.start == i:  # new color starts now
+            pre_color = TAG_TO_ANSI[colors[0].tag]
+
+        if c == '\x1a':  # CTRL-Z on Windows
+            chars.append(c)
+            char_widths.append(2)
         elif ord(c) < 128:
-            s.append(c)
-            b.append(1)
+            chars.append(c)
+            char_widths.append(1)
         elif unicodedata.category(c).startswith("C"):
             c = r"\u%04x" % ord(c)
-            s.append(c)
-            b.append(len(c))
+            chars.append(c)
+            char_widths.append(len(c))
         else:
-            s.append(c)
-            b.append(str_width(c))
-        if colors and colors[0].span.end == i:
-            s.append(TAG_TO_ANSI["SYNC"])
-            b.append(0)
+            chars.append(c)
+            char_widths.append(str_width(c))
+
+        if colors and colors[0].span.end == i:  # current color ends now
+            post_color = TAG_TO_ANSI["SYNC"]
             colors.pop(0)
 
-    # if we're in a multiline string, close the color to keep things clean
-    if colors and colors[0].span.start < i and colors[0].span.end > i:
-        s.append(ANSIColors.RESET)
-        b.append(0)
+        chars[-1] = pre_color + chars[-1] + post_color
+        pre_color = ""
+        post_color = ""
 
-    trace("disp_str({buffer}) = {s}, {b}", buffer=repr(buffer), s=s, b=b)
-    return s, b
+    if colors and colors[0].span.start < i and colors[0].span.end > i:
+        # even though the current color should be continued, reset it for now.
+        # the next call to `disp_str()` will revive it.
+        chars[-1] += TAG_TO_ANSI["SYNC"]
+
+    trace("disp_str({buffer}) = {s}, {b}", buffer=repr(buffer), s=chars, b=char_widths)
+    return chars, char_widths

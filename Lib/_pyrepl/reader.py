@@ -319,7 +319,7 @@ class Reader:
         if self.can_colorize:
             colors = list(gen_colors(self.get_unicode()))
         else:
-            colors = []
+            colors = None
         lines = "".join(self.buffer[offset:]).split("\n")
 
         cursor_found = False
@@ -348,7 +348,7 @@ class Reader:
                 screeninfo.append((0, []))
             pos -= line_len + 1
             prompt, prompt_len = self.process_prompt(prompt)
-            chars, char_widths = disp_str(line, offset, colors)
+            chars, char_widths = disp_str(line, colors, offset)
             wrapcount = (sum(char_widths) + prompt_len) // self.console.width
             trace("wrapcount = {wrapcount}", wrapcount=wrapcount)
             if wrapcount == 0 or not char_widths:
@@ -512,7 +512,7 @@ class Reader:
         i = 0
         while i < y:
             prompt_len, char_widths = self.screeninfo[i]
-            offset = len(char_widths) - char_widths.count(0)
+            offset = len(char_widths)
             in_wrapped_line = prompt_len + sum(char_widths) >= self.console.width
             if in_wrapped_line:
                 pos += offset - 1  # -1 cause backslash is not in buffer
@@ -534,29 +534,33 @@ class Reader:
 
     def pos2xy(self) -> tuple[int, int]:
         """Return the x, y coordinates of position 'pos'."""
-        # this *is* incomprehensible, yes.
-        p, y = 0, 0
+
+        prompt_len, y = 0, 0
         char_widths: list[int] = []
         pos = self.pos
         assert 0 <= pos <= len(self.buffer)
+
+        # optimize for the common case: typing at the end of the buffer
         if pos == len(self.buffer) and len(self.screeninfo) > 0:
             y = len(self.screeninfo) - 1
-            p, char_widths = self.screeninfo[y]
-            return p + sum(char_widths) + char_widths.count(0), y
+            prompt_len, char_widths = self.screeninfo[y]
+            return prompt_len + sum(char_widths), y
 
-        for p, char_widths in self.screeninfo:
-            l = len(char_widths) - char_widths.count(0)
-            in_wrapped_line = p + sum(char_widths) >= self.console.width
-            offset = l - 1 if in_wrapped_line else l  # need to remove backslash
+        for prompt_len, char_widths in self.screeninfo:
+            offset = len(char_widths)
+            in_wrapped_line = prompt_len + sum(char_widths) >= self.console.width
+            if in_wrapped_line:
+                offset -= 1  # need to remove line-wrapping backslash
+
             if offset >= pos:
                 break
 
-            if p + sum(char_widths) >= self.console.width:
-                pos -= l - 1  # -1 cause backslash is not in buffer
-            else:
-                pos -= l + 1  # +1 cause newline is in buffer
+            if not in_wrapped_line:
+                offset += 1  # there's a newline in buffer
+
+            pos -= offset
             y += 1
-        return p + sum(char_widths[:pos]), y
+        return prompt_len + sum(char_widths[:pos]), y
 
     def insert(self, text: str | list[str]) -> None:
         """Insert 'text' at the insertion point."""
@@ -567,7 +571,7 @@ class Reader:
     def update_cursor(self) -> None:
         """Move the cursor to reflect changes in self.pos"""
         self.cxy = self.pos2xy()
-        trace("update_cursor = {cxy}", cxy=self.cxy)
+        trace("update_cursor({pos}) = {cxy}", pos=self.pos, cxy=self.cxy)
         self.console.move_cursor(*self.cxy)
 
     def after_command(self, cmd: Command) -> None:
