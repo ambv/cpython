@@ -325,8 +325,8 @@ class Reader:
         cursor_found = False
         lines_beyond_cursor = 0
         for ln, line in enumerate(lines, num_common_lines):
-            ll = len(line)
-            if 0 <= pos <= ll:
+            line_len = len(line)
+            if 0 <= pos <= line_len:
                 self.lxy = pos, ln
                 cursor_found = True
             elif cursor_found:
@@ -340,34 +340,35 @@ class Reader:
                 prompt_from_cache = False
                 prompt = ""
             else:
-                prompt = self.get_prompt(ln, ll >= pos >= 0)
+                prompt = self.get_prompt(ln, line_len >= pos >= 0)
             while "\n" in prompt:
                 pre_prompt, _, prompt = prompt.partition("\n")
                 last_refresh_line_end_offsets.append(offset)
                 screen.append(pre_prompt)
                 screeninfo.append((0, []))
-            pos -= ll + 1
-            prompt, lp = self.process_prompt(prompt)
-            l, l2 = disp_str(line, offset, colors)
-            wrapcount = (wlen(l) + lp) // self.console.width
-            if wrapcount == 0:
-                offset += ll + 1  # Takes all of the line plus the newline
+            pos -= line_len + 1
+            prompt, prompt_len = self.process_prompt(prompt)
+            chars, char_widths = disp_str(line, offset, colors)
+            wrapcount = (sum(char_widths) + prompt_len) // self.console.width
+            trace("wrapcount = {wrapcount}", wrapcount=wrapcount)
+            if wrapcount == 0 or not char_widths:
+                offset += line_len + 1  # Takes all of the line plus the newline
                 last_refresh_line_end_offsets.append(offset)
-                screen.append(prompt + l)
-                screeninfo.append((lp, l2))
+                screen.append(prompt + "".join(chars))
+                screeninfo.append((prompt_len, char_widths))
             else:
-                i = 0
-                while l:
-                    prelen = lp if i == 0 else 0
+                for wrap in range(wrapcount + 1):
+                    pre = prompt if wrap == 0 else ""
+                    prelen = prompt_len if wrap == 0 else 0
                     index_to_wrap_before = 0
                     column = 0
-                    for character_width in l2:
-                        if column + character_width >= self.console.width - prelen:
+                    # TODO: where's the column left for the \ ?
+                    for char_width in char_widths:
+                        if column + char_width + prelen >= self.console.width:
                             break
                         index_to_wrap_before += 1
-                        column += character_width
-                    pre = prompt if i == 0 else ""
-                    if len(l) > index_to_wrap_before:
+                        column += char_width
+                    if len(chars) > index_to_wrap_before:
                         offset += index_to_wrap_before
                         post = "\\"
                         after = [1]
@@ -376,11 +377,12 @@ class Reader:
                         post = ""
                         after = []
                     last_refresh_line_end_offsets.append(offset)
-                    screen.append(pre + l[:index_to_wrap_before] + post)
-                    screeninfo.append((prelen, l2[:index_to_wrap_before] + after))
-                    l = l[index_to_wrap_before:]
-                    l2 = l2[index_to_wrap_before:]
-                    i += 1
+                    render = pre + "".join(chars[:index_to_wrap_before]) + post
+                    render_widths = char_widths[:index_to_wrap_before] + after
+                    screen.append(render)
+                    screeninfo.append((prelen, render_widths))
+                    chars = chars[index_to_wrap_before:]
+                    char_widths = char_widths[index_to_wrap_before:]
         self.screeninfo = screeninfo
         self.cxy = self.pos2xy()
         if self.msg:
@@ -399,8 +401,9 @@ class Reader:
         (\x01 and \x02) removed.  The length ignores anything between those
         brackets as well as any ANSI escape sequences.
         """
-        out_prompt = unbracket(prompt)
-        return out_prompt, wlen(prompt)
+        out_prompt = unbracket(prompt, including_content=False)
+        visible_prompt = unbracket(prompt, including_content=True)
+        return out_prompt, wlen(visible_prompt)
 
     def bow(self, p: int | None = None) -> int:
         """Return the 0-based index of the word break preceding p most
@@ -508,9 +511,9 @@ class Reader:
         pos = 0
         i = 0
         while i < y:
-            prompt_len, character_widths = self.screeninfo[i]
-            offset = len(character_widths) - character_widths.count(0)
-            in_wrapped_line = prompt_len + sum(character_widths) >= self.console.width
+            prompt_len, char_widths = self.screeninfo[i]
+            offset = len(char_widths) - char_widths.count(0)
+            in_wrapped_line = prompt_len + sum(char_widths) >= self.console.width
             if in_wrapped_line:
                 pos += offset - 1  # -1 cause backslash is not in buffer
             else:
@@ -533,27 +536,27 @@ class Reader:
         """Return the x, y coordinates of position 'pos'."""
         # this *is* incomprehensible, yes.
         p, y = 0, 0
-        l2: list[int] = []
+        char_widths: list[int] = []
         pos = self.pos
         assert 0 <= pos <= len(self.buffer)
         if pos == len(self.buffer) and len(self.screeninfo) > 0:
             y = len(self.screeninfo) - 1
-            p, l2 = self.screeninfo[y]
-            return p + sum(l2) + l2.count(0), y
+            p, char_widths = self.screeninfo[y]
+            return p + sum(char_widths) + char_widths.count(0), y
 
-        for p, l2 in self.screeninfo:
-            l = len(l2) - l2.count(0)
-            in_wrapped_line = p + sum(l2) >= self.console.width
+        for p, char_widths in self.screeninfo:
+            l = len(char_widths) - char_widths.count(0)
+            in_wrapped_line = p + sum(char_widths) >= self.console.width
             offset = l - 1 if in_wrapped_line else l  # need to remove backslash
             if offset >= pos:
                 break
 
-            if p + sum(l2) >= self.console.width:
+            if p + sum(char_widths) >= self.console.width:
                 pos -= l - 1  # -1 cause backslash is not in buffer
             else:
                 pos -= l + 1  # +1 cause newline is in buffer
             y += 1
-        return p + sum(l2[:pos]), y
+        return p + sum(char_widths[:pos]), y
 
     def insert(self, text: str | list[str]) -> None:
         """Insert 'text' at the insertion point."""

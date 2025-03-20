@@ -6,6 +6,7 @@ from idlelib import colorizer
 from typing import cast, Iterator, Literal, Match, NamedTuple, Pattern, Self
 from _colorize import ANSIColors
 
+from .types import CharBuffer, CharWidths
 from .trace import trace
 
 ANSI_ESCAPE_SEQUENCE = re.compile(r"\x1b\[[ -@]*[A-~]")
@@ -65,7 +66,6 @@ def str_width(c: str) -> int:
 def wlen(s: str) -> int:
     if len(s) == 1 and s != '\x1a':
         return str_width(s)
-    s = ZERO_WIDTH_BRACKET.sub("", s)
     length = sum(str_width(i) for i in s)
     # remove lengths of any escape sequences
     sequence = ANSI_ESCAPE_SEQUENCE.findall(s)
@@ -73,7 +73,14 @@ def wlen(s: str) -> int:
     return length - sum(len(i) for i in sequence) + ctrl_z_cnt
 
 
-def unbracket(s: str) -> str:
+def unbracket(s: str, including_content: bool = False) -> str:
+    r"""Return `s` with \001 and \002 characters removed.
+
+    If `including_content` is True, content between \001 and \002 is also
+    stripped.
+    """
+    if including_content:
+        return ZERO_WIDTH_BRACKET.sub("", s)
     return s.translate(ZERO_WIDTH_TRANS)
 
 
@@ -103,22 +110,28 @@ def gen_color_spans(re_match: Match[str]) -> Iterator[ColorSpan]:
 
 def disp_str(
     buffer: str, offset: int, colors: list[ColorSpan]
-) -> tuple[str, list[int]]:
-    """Return a printable variant of `buffer` with usage metadata.
+) -> tuple[CharBuffer, CharWidths]:
+    """Decompose the input buffer into a printable variant with applied colors.
+    
+    Returns a tuple of two lists:
+    - the first list is the input buffer, character by character, with color
+      escape codes added (while those codes contain multiple ASCII characters,
+      each code is considered atomic);
+    - the second list is the visible width of each character in the first
+      buffer.
 
     Note: the `colors` list is partially consumed within.
 
-    The list details where the characters of buffer get used up.
     Examples:
     >>> utils.disp_str("a = 9", offset=0, colors=[])
-    ('a = 9', [1, 1, 1, 1, 1])
+    (['a', ' ', '=', ' ', '9'], [1, 1, 1, 1, 1])
 
     """
-    b: list[int] = []
-    s: list[str] = []
+    s: CharBuffer = []
+    b: CharWidths = []
 
     if not buffer:
-        return "", b
+        return s, b
 
     while colors and colors[0].span.end < offset:
         colors.pop(0)
@@ -126,11 +139,13 @@ def disp_str(
     # maybe we're continuing a multiline string color...
     if colors and colors[0].span.start < offset:
         s.append(TAG_TO_ANSI[colors[0].tag])
-
+        b.append(0)
     for i, c in enumerate(buffer, offset):
         if colors and colors[0].span.start == i:
             s.append(TAG_TO_ANSI[colors[0].tag])
+            b.append(0)
         if c == '\x1a':
+            # TODO: I don't like this CTRL-Z being singled out for Windows.
             s.append(c)
             b.append(2)
         elif ord(c) < 128:
@@ -145,6 +160,7 @@ def disp_str(
             b.append(str_width(c))
         if colors and colors[0].span.end == i:
             s.append(TAG_TO_ANSI["SYNC"])
+            b.append(0)
             colors.pop(0)
 
     # if we're in a multiline string, close the color to keep things clean
@@ -152,6 +168,5 @@ def disp_str(
         s.append(ANSIColors.RESET)
         b.append(0)
 
-    result = "".join(s)
-    trace("disp_str({buffer}) = {result}, {b}", buffer=repr(buffer), result=repr(result), b=b)
-    return result, b
+    trace("disp_str({buffer}) = {s}, {b}", buffer=repr(buffer), s=s, b=b)
+    return s, b
