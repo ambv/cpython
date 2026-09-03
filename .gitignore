@@ -178,11 +178,13 @@ Python/frozen_modules/MANIFEST
 /python
 !/Python/
 
-# Local AI agent scratch state (per-PR and per-branch notebooks, sandbox
-# experiments) and personal agent overrides, none of which are committed.
+# Local scratch state for Claude-based tooling (see their own skill docs).
 /.claude/pr-*
 /.claude/branch-*
 /.claude/sandbox/
+# Agent working state for the vendor-neutral conventions in AGENTS.md.
+/.agents/worklog/
+/.agents/sandbox/
 AGENTS.local.md
 CLAUDE.local.md
 
